@@ -1,0 +1,53 @@
+{
+  "expo": {
+    "name": "Soccer Tracker",
+    "slug": "soccer-tracker",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0A0A0A"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.soccertracker.app",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "경기 및 훈련 중 GPS 위치를 추적합니다.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "화면이 잠겨 있을 때도 세션 추적을 계속합니다.",
+        "NSLocationAlwaysUsageDescription": "백그라운드에서 GPS 추적을 유지합니다."
+      },
+      "backgroundModes": ["location"]
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0A0A0A"
+      },
+      "package": "com.soccertracker.app",
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "FOREGROUND_SERVICE"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "경기 및 훈련 중 GPS 위치를 추적합니다.",
+          "isIosBackgroundLocationEnabled": true,
+          "isAndroidBackgroundLocationEnabled": true
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "soccer-tracker"
+      }
+    }
+  }
+}
