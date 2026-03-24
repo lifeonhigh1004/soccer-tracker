@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -13,16 +13,19 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import MapView, { Polyline, Marker, Heatmap, PROVIDER_GOOGLE } from 'react-native-maps';
+import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 
 import { Colors } from '../../../core/theme/colors';
 import { Typography } from '../../../core/theme/typography';
 import { Spacing, Radius } from '../../../core/theme/spacing';
 import { Sport, SessionType, SessionStatus } from '../../../core/types/session';
 import type { SessionSummary } from '../../../core/types/session';
-import type { TrackingNavProp } from '../../../core/navigation/types';
-import { useLocationTracking, FinalTrackingData } from '../../../shared/hooks/useLocationTracking';
-import { saveSession } from '../../../shared/services/storageService';
+import type { TrackingNavProp, RootTabParamList } from '../../../core/navigation/types';
+import { useLocationTracking, FinalTrackingData, LatLng } from '../../../shared/hooks/useLocationTracking';
+import { useIMU } from '../../../shared/hooks/useIMU';
+import { useCompass } from '../../../shared/hooks/useCompass';
+import { saveSession, saveSessionPoints } from '../../../shared/services/storageService';
 import { calculateBounds } from '../../../shared/utils/geoUtils';
 import {
   formatDuration,
@@ -31,6 +34,8 @@ import {
 } from '../../../shared/utils/formatters';
 
 type ScreenState = 'idle' | 'active' | 'paused' | 'saving';
+
+const SPRINT_BANNER_MS = 2000; // 스프린트 배너 표시 시간
 
 const SPORT_INFO: Record<Sport, { emoji: string; label: string; color: string }> = {
   [Sport.Soccer]: { emoji: '⚽', label: '축구', color: Colors.soccer },
@@ -42,42 +47,98 @@ const TYPE_INFO: Record<SessionType, { emoji: string; label: string; color: stri
   [SessionType.Training]: { emoji: '🏃', label: '훈련', color: Colors.training },
 };
 
+// 다크 지도 스타일
+const DARK_MAP_STYLE = [
+  { elementType: 'geometry', stylers: [{ color: '#1A1A1A' }] },
+  { elementType: 'labels.icon', stylers: [{ visibility: 'off' }] },
+  { elementType: 'labels.text.fill', stylers: [{ color: '#6B6B6B' }] },
+  { elementType: 'labels.text.stroke', stylers: [{ color: '#1A1A1A' }] },
+  { featureType: 'administrative', elementType: 'geometry', stylers: [{ color: '#2E2E2E' }] },
+  { featureType: 'poi', stylers: [{ visibility: 'off' }] },
+  { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#2E2E2E' }] },
+  { featureType: 'road', elementType: 'geometry.stroke', stylers: [{ color: '#242424' }] },
+  { featureType: 'road.highway', elementType: 'geometry', stylers: [{ color: '#3A3A3A' }] },
+  { featureType: 'transit', stylers: [{ visibility: 'off' }] },
+  { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#0D1117' }] },
+];
+
 export function TrackingScreen() {
   const navigation = useNavigation<TrackingNavProp>();
-  const tracking = useLocationTracking();
+  const route = useRoute<RouteProp<RootTabParamList, 'Tracking'>>();
 
   const [screenState, setScreenState] = useState<ScreenState>('idle');
   const [selectedSport, setSelectedSport] = useState<Sport>(Sport.Soccer);
   const [selectedType, setSelectedType] = useState<SessionType>(SessionType.Training);
+
+  // 대시보드 빠른 시작에서 넘어올 때 sport/type 자동 선택
+  useEffect(() => {
+    if (screenState !== 'idle') return;
+    if (route.params?.sport) setSelectedSport(route.params.sport);
+    if (route.params?.type) setSelectedType(route.params.type);
+  }, [route.params]);
   const [notes, setNotes] = useState('');
   const [finalData, setFinalData] = useState<FinalTrackingData | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [sprintCount, setSprintCount] = useState(0);
+  const [showSprintBanner, setShowSprintBanner] = useState(false);
+  const sprintBannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleSprintStart = useCallback(() => {
+    setSprintCount((c) => c + 1);
+    setShowSprintBanner(true);
+    if (sprintBannerTimerRef.current) clearTimeout(sprintBannerTimerRef.current);
+    sprintBannerTimerRef.current = setTimeout(() => setShowSprintBanner(false), SPRINT_BANNER_MS);
+  }, []);
+
+  const handleSprintEnd = useCallback(() => {
+    // 배너는 타이머로 자동 숨김 — 별도 처리 불필요
+  }, []);
+
+  const { getIMUState } = useIMU({
+    enabled: screenState === 'active',
+    onSprintStart: handleSprintStart,
+    onSprintEnd: handleSprintEnd,
+  });
+
+  const heading = useCompass(screenState === 'active' || screenState === 'paused');
+  const tracking = useLocationTracking({ getIMUState });
+
+  useEffect(() => {
+    return () => {
+      if (sprintBannerTimerRef.current) clearTimeout(sprintBannerTimerRef.current);
+    };
+  }, []);
 
   const handleStart = async () => {
+    setSprintCount(0);
+    setShowSprintBanner(false);
     const success = await tracking.startTracking();
     if (success) {
       setScreenState('active');
     } else {
-      Alert.alert(
-        '위치 권한 필요',
-        '설정에서 위치 권한을 허용해주세요.',
-        [{ text: '확인' }],
-      );
+      Alert.alert('위치 권한 필요', '설정에서 위치 권한을 허용해주세요.', [{ text: '확인' }]);
     }
   };
 
-  const handlePause = () => {
-    tracking.pauseTracking();
+  // 앱 재시작 후 진행 중인 세션이 있으면 화면 상태 복원
+  useEffect(() => {
+    if (!tracking.isLoading && tracking.isSessionActive) {
+      setScreenState(tracking.isSessionPaused ? 'paused' : 'active');
+    }
+  }, [tracking.isLoading, tracking.isSessionActive, tracking.isSessionPaused]);
+
+  const handlePause = async () => {
+    await tracking.pauseTracking();
     setScreenState('paused');
   };
 
-  const handleResume = () => {
-    tracking.resumeTracking();
+  const handleResume = async () => {
+    await tracking.resumeTracking();
     setScreenState('active');
   };
 
-  const handleStop = () => {
-    const data = tracking.stopTracking();
+  const handleStop = async () => {
+    const data = await tracking.stopTracking();
     setFinalData(data);
     setScreenState('saving');
   };
@@ -112,7 +173,12 @@ export function TrackingScreen() {
         routeBounds: calculateBounds(finalData.locationPoints),
       };
 
-      await saveSession(session);
+      await Promise.all([
+        saveSession(session),
+        finalData.locationPoints.length > 0
+          ? saveSessionPoints(session.id, finalData.locationPoints)
+          : Promise.resolve(),
+      ]);
       tracking.reset();
       setNotes('');
       setFinalData(null);
@@ -145,7 +211,6 @@ export function TrackingScreen() {
     );
   };
 
-  // 실시간 페이스 계산
   const livePace =
     tracking.distanceMeters > 20 && tracking.durationSeconds > 10
       ? 60 / ((tracking.distanceMeters / 1000) / (tracking.durationSeconds / 3600))
@@ -187,6 +252,11 @@ export function TrackingScreen() {
             maxSpeedKph={tracking.maxSpeedKph}
             pace={livePace}
             gpsReady={tracking.gpsReady}
+            heading={heading}
+            currentLocation={tracking.currentLocation}
+            routeCoordinates={tracking.routeCoordinates}
+            sprintCount={sprintCount}
+            showSprintBanner={showSprintBanner}
             onPause={handlePause}
             onResume={handleResume}
             onStop={handleStop}
@@ -201,6 +271,7 @@ export function TrackingScreen() {
         sessionType={selectedType}
         notes={notes}
         isSaving={isSaving}
+        sprintCount={sprintCount}
         onNotesChange={setNotes}
         onSave={handleSave}
         onDiscard={handleDiscard}
@@ -209,7 +280,7 @@ export function TrackingScreen() {
   );
 }
 
-// ─── Idle ────────────────────────────────────────────────────────────────────
+// ─── Idle ─────────────────────────────────────────────────────────────────────
 
 function IdleView({
   selectedSport,
@@ -228,7 +299,6 @@ function IdleView({
 }) {
   return (
     <View style={styles.idleContainer}>
-      {/* 스포츠 선택 */}
       <Text style={styles.selectorLabel}>스포츠</Text>
       <View style={styles.chipRow}>
         {(Object.values(Sport) as Sport[]).map((sport) => {
@@ -248,7 +318,6 @@ function IdleView({
         })}
       </View>
 
-      {/* 세션 타입 선택 */}
       <Text style={styles.selectorLabel}>종류</Text>
       <View style={[styles.chipRow, { marginBottom: Spacing.xxxl }]}>
         {(Object.values(SessionType) as SessionType[]).map((type) => {
@@ -268,7 +337,6 @@ function IdleView({
         })}
       </View>
 
-      {/* GPS 상태 */}
       {hasPermission === false ? (
         <View style={styles.gpsStatus}>
           <View style={[styles.gpsDot, { backgroundColor: Colors.danger }]} />
@@ -281,7 +349,6 @@ function IdleView({
         </View>
       )}
 
-      {/* 시작 버튼 */}
       <TouchableOpacity style={styles.startButton} onPress={onStart} activeOpacity={0.85}>
         <Text style={styles.startButtonText}>세션 시작</Text>
       </TouchableOpacity>
@@ -289,7 +356,7 @@ function IdleView({
   );
 }
 
-// ─── Active / Paused ─────────────────────────────────────────────────────────
+// ─── Active / Paused ──────────────────────────────────────────────────────────
 
 function ActiveView({
   state,
@@ -299,6 +366,11 @@ function ActiveView({
   maxSpeedKph,
   pace,
   gpsReady,
+  heading,
+  currentLocation,
+  routeCoordinates,
+  sprintCount,
+  showSprintBanner,
   onPause,
   onResume,
   onStop,
@@ -310,65 +382,274 @@ function ActiveView({
   maxSpeedKph: number;
   pace: number | null;
   gpsReady: boolean;
+  heading: number | null;
+  currentLocation: LatLng | null;
+  routeCoordinates: LatLng[];
+  sprintCount: number;
+  showSprintBanner: boolean;
   onPause: () => void;
   onResume: () => void;
   onStop: () => void;
 }) {
   return (
     <View style={styles.activeContainer}>
-      {/* GPS 신호 표시 */}
-      {!gpsReady && (
-        <View style={styles.gpsWarning}>
-          <View style={[styles.gpsDot, { backgroundColor: Colors.warning }]} />
-          <Text style={styles.gpsWarningText}>GPS 신호 잡는 중...</Text>
+      {/* 지도 (화면 대부분 차지) */}
+      <RouteMap
+        currentLocation={currentLocation}
+        routeCoordinates={routeCoordinates}
+        gpsReady={gpsReady}
+        heading={heading}
+        isPaused={state === 'paused'}
+      />
+
+      {/* 스프린트 배너 */}
+      {showSprintBanner && (
+        <View style={styles.sprintBanner}>
+          <Text style={styles.sprintBannerText}>⚡ 스프린트!</Text>
         </View>
       )}
 
-      {/* 타이머 */}
-      <View style={styles.timerBlock}>
-        <Text style={styles.timerLabel}>활동 시간</Text>
-        <Text style={[styles.timerValue, state === 'paused' && styles.timerValuePaused]}>
-          {formatDuration(durationSeconds)}
-        </Text>
-      </View>
+      {/* 하단 패널 */}
+      <View style={styles.bottomPanel}>
+        {/* 타이머 + GPS 상태 */}
+        <View style={styles.timerRow}>
+          <View>
+            <Text style={styles.timerLabel}>활동 시간</Text>
+            <Text style={[styles.timerValue, state === 'paused' && styles.timerValuePaused]}>
+              {formatDuration(durationSeconds)}
+            </Text>
+          </View>
+          <View style={styles.rightIndicators}>
+            {sprintCount > 0 && (
+              <View style={styles.sprintBadge}>
+                <Text style={styles.sprintBadgeText}>⚡ {sprintCount}</Text>
+              </View>
+            )}
+            <View style={styles.gpsIndicator}>
+              <View style={[styles.gpsDot, { backgroundColor: gpsReady ? Colors.primary : Colors.warning }]} />
+              <Text style={[styles.gpsIndicatorText, { color: gpsReady ? Colors.primary : Colors.warning }]}>
+                {gpsReady ? 'GPS 연결됨' : 'GPS 대기 중'}
+              </Text>
+            </View>
+          </View>
+        </View>
 
-      {/* 실시간 스탯 */}
-      <View style={styles.statsGrid}>
-        <StatCard value={formatDistanceKm(distanceMeters)} unit="km" label="거리" />
-        <StatCard value={currentSpeedKph.toFixed(1)} unit="km/h" label="현재 속도" />
-        <StatCard value={maxSpeedKph.toFixed(1)} unit="km/h" label="최고 속도" />
-        <StatCard value={formatPace(pace)} unit="" label="페이스" />
-      </View>
+        {/* 통계 4개 */}
+        <View style={styles.statsRow}>
+          <StatItem value={formatDistanceKm(distanceMeters)} unit="km" label="거리" />
+          <View style={styles.statDivider} />
+          <StatItem value={currentSpeedKph.toFixed(1)} unit="km/h" label="현재" />
+          <View style={styles.statDivider} />
+          <StatItem value={maxSpeedKph.toFixed(1)} unit="km/h" label="최고" />
+          <View style={styles.statDivider} />
+          <StatItem value={formatPace(pace)} unit="" label="페이스" />
+        </View>
 
-      {/* 지도 플레이스홀더 */}
-      <View style={styles.mapArea}>
-        <Text style={styles.mapEmoji}>🗺️</Text>
-        <Text style={styles.mapText}>경로 지도</Text>
-        <Text style={styles.mapSub}>GPS 포인트 {distanceMeters > 0 ? '수집 중' : '대기 중'}</Text>
-      </View>
-
-      {/* 컨트롤 */}
-      <View style={styles.controls}>
-        <TouchableOpacity style={styles.stopBtn} onPress={onStop} activeOpacity={0.8}>
-          <Text style={styles.stopBtnText}>종료</Text>
-        </TouchableOpacity>
-        {state === 'active' ? (
-          <TouchableOpacity style={styles.pauseBtn} onPress={onPause} activeOpacity={0.8}>
-            <Text style={styles.pauseBtnText}>일시정지</Text>
+        {/* 컨트롤 */}
+        <View style={styles.controls}>
+          <TouchableOpacity style={styles.stopBtn} onPress={onStop} activeOpacity={0.8}>
+            <Text style={styles.stopBtnText}>종료</Text>
           </TouchableOpacity>
-        ) : (
-          <TouchableOpacity style={styles.resumeBtn} onPress={onResume} activeOpacity={0.8}>
-            <Text style={styles.resumeBtnText}>재개</Text>
-          </TouchableOpacity>
-        )}
+          {state === 'active' ? (
+            <TouchableOpacity style={styles.pauseBtn} onPress={onPause} activeOpacity={0.8}>
+              <Text style={styles.pauseBtnText}>일시정지</Text>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity style={styles.resumeBtn} onPress={onResume} activeOpacity={0.8}>
+              <Text style={styles.resumeBtnText}>재개</Text>
+            </TouchableOpacity>
+          )}
+        </View>
       </View>
     </View>
   );
 }
 
-function StatCard({ value, unit, label }: { value: string; unit: string; label: string }) {
+// ─── Route Map ────────────────────────────────────────────────────────────────
+
+// 히트맵 그라디언트: 파랑(낮음) → 초록 → 노랑 → 빨강(높음)
+const HEATMAP_GRADIENT = {
+  colors: ['#2979FF', '#00E5FF', '#69FF47', '#FFFF00', '#FF6D00', '#FF1744'],
+  startPoints: [0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
+  colorMapSize: 256,
+};
+
+// 범례 색상 (낮음→높음 순)
+const LEGEND_COLORS = ['#2979FF', '#00E5FF', '#69FF47', '#FFFF00', '#FF6D00', '#FF1744'];
+
+const RouteMap = React.memo(function RouteMap({
+  currentLocation,
+  routeCoordinates,
+  gpsReady,
+  heading,
+  isPaused,
+}: {
+  currentLocation: LatLng | null;
+  routeCoordinates: LatLng[];
+  gpsReady: boolean;
+  heading: number | null;
+  isPaused: boolean;
+}) {
+  const mapRef = useRef<MapView>(null);
+  const [isFollowing, setIsFollowing] = useState(true);
+  const [showHeatmap, setShowHeatmap] = useState(false);
+
+  // 히트맵 포인트: 10개 단위로만 재계산 (매 GPS 업데이트마다 재렌더 방지)
+  const heatmapUpdateCounter = Math.floor(routeCoordinates.length / 10);
+  const heatmapPoints = useMemo(
+    () => routeCoordinates.map((p) => ({ latitude: p.latitude, longitude: p.longitude, weight: 1 })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [heatmapUpdateCounter, showHeatmap],
+  );
+
+  useEffect(() => {
+    if (currentLocation && isFollowing && mapRef.current) {
+      mapRef.current.animateToRegion(
+        {
+          latitude: currentLocation.latitude,
+          longitude: currentLocation.longitude,
+          latitudeDelta: 0.003,
+          longitudeDelta: 0.003,
+        },
+        600,
+      );
+    }
+  }, [currentLocation, isFollowing]);
+
+  const hasEnoughData = routeCoordinates.length >= 20;
+
   return (
-    <View style={styles.statCard}>
+    <View style={styles.mapContainer}>
+      <MapView
+        ref={mapRef}
+        style={styles.map}
+        provider={PROVIDER_GOOGLE}
+        customMapStyle={DARK_MAP_STYLE}
+        initialRegion={
+          currentLocation
+            ? {
+                latitude: currentLocation.latitude,
+                longitude: currentLocation.longitude,
+                latitudeDelta: 0.003,
+                longitudeDelta: 0.003,
+              }
+            : undefined
+        }
+        onPanDrag={() => setIsFollowing(false)}
+        showsCompass={false}
+        showsScale={false}
+        toolbarEnabled={false}
+        moveOnMarkerPress={false}
+      >
+        {/* 활동 히트맵 */}
+        {showHeatmap && hasEnoughData && (
+          <Heatmap
+            points={heatmapPoints}
+            radius={28}
+            opacity={0.75}
+            gradient={HEATMAP_GRADIENT}
+          />
+        )}
+
+        {/* 이동 경로 (히트맵 켜면 반투명) */}
+        {routeCoordinates.length > 1 && (
+          <Polyline
+            coordinates={routeCoordinates}
+            strokeColor={
+              showHeatmap
+                ? `${Colors.primary}44`
+                : isPaused
+                ? Colors.warning
+                : Colors.primary
+            }
+            strokeWidth={showHeatmap ? 2 : 4}
+            lineCap="round"
+            lineJoin="round"
+          />
+        )}
+
+        {/* 현재 위치 + 방향 마커 */}
+        {currentLocation && (
+          <Marker
+            coordinate={currentLocation}
+            anchor={{ x: 0.5, y: 0.5 }}
+            tracksViewChanges={heading !== null}
+            flat
+          >
+            <View
+              style={[
+                styles.directionMarker,
+                heading !== null && { transform: [{ rotate: `${heading}deg` }] },
+              ]}
+            >
+              {/* 방향 화살표 (삼각형) */}
+              <View
+                style={[
+                  styles.directionArrow,
+                  { borderBottomColor: isPaused ? Colors.warning : Colors.primary },
+                ]}
+              />
+              {/* 중심 원 */}
+              <View
+                style={[
+                  styles.directionDot,
+                  { backgroundColor: isPaused ? Colors.warning : Colors.primary },
+                ]}
+              />
+            </View>
+          </Marker>
+        )}
+      </MapView>
+
+      {/* GPS 신호 없을 때 오버레이 */}
+      {!gpsReady && (
+        <View style={styles.noGpsOverlay}>
+          <Text style={styles.noGpsText}>📡 GPS 신호 잡는 중...</Text>
+        </View>
+      )}
+
+      {/* 히트맵 토글 버튼 */}
+      {hasEnoughData && (
+        <TouchableOpacity
+          style={[styles.heatmapBtn, showHeatmap && styles.heatmapBtnActive]}
+          onPress={() => setShowHeatmap((v) => !v)}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.heatmapBtnText}>🔥</Text>
+        </TouchableOpacity>
+      )}
+
+      {/* 히트맵 범례 */}
+      {showHeatmap && hasEnoughData && (
+        <View style={styles.legendContainer}>
+          <Text style={styles.legendLabel}>낮음</Text>
+          <View style={styles.legendBar}>
+            {LEGEND_COLORS.map((color) => (
+              <View key={color} style={[styles.legendSegment, { backgroundColor: color }]} />
+            ))}
+          </View>
+          <Text style={styles.legendLabel}>높음</Text>
+        </View>
+      )}
+
+      {/* 현재 위치로 재이동 버튼 */}
+      {!isFollowing && currentLocation && (
+        <TouchableOpacity
+          style={styles.recenterBtn}
+          onPress={() => setIsFollowing(true)}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.recenterText}>📍</Text>
+        </TouchableOpacity>
+      )}
+
+    </View>
+  );
+});
+
+function StatItem({ value, unit, label }: { value: string; unit: string; label: string }) {
+  return (
+    <View style={styles.statItem}>
       <View style={styles.statValueRow}>
         <Text style={styles.statValue}>{value}</Text>
         {unit ? <Text style={styles.statUnit}>{unit}</Text> : null}
@@ -387,6 +668,7 @@ function SaveModal({
   sessionType,
   notes,
   isSaving,
+  sprintCount,
   onNotesChange,
   onSave,
   onDiscard,
@@ -397,6 +679,7 @@ function SaveModal({
   sessionType: SessionType;
   notes: string;
   isSaving: boolean;
+  sprintCount: number;
   onNotesChange: (text: string) => void;
   onSave: () => void;
   onDiscard: () => void;
@@ -418,35 +701,27 @@ function SaveModal({
       >
         <View style={styles.modalSheet}>
           <View style={styles.modalHandle} />
-
           <ScrollView showsVerticalScrollIndicator={false}>
             <Text style={styles.modalTitle}>세션 완료</Text>
 
-            {/* 세션 타입 뱃지 */}
             <View style={styles.sessionBadgeRow}>
               <View style={[styles.sessionBadge, { borderColor: sportInfo.color }]}>
-                <Text style={styles.sessionBadgeText}>
-                  {sportInfo.emoji} {sportInfo.label}
-                </Text>
+                <Text style={styles.sessionBadgeText}>{sportInfo.emoji} {sportInfo.label}</Text>
               </View>
               <View style={[styles.sessionBadge, { borderColor: typeInfo.color }]}>
-                <Text style={styles.sessionBadgeText}>
-                  {typeInfo.emoji} {typeInfo.label}
-                </Text>
+                <Text style={styles.sessionBadgeText}>{typeInfo.emoji} {typeInfo.label}</Text>
               </View>
             </View>
 
-            {/* 요약 스탯 */}
             <View style={styles.summaryGrid}>
               <SummaryStat label="활동 시간" value={formatDuration(dur)} />
               <SummaryStat label="이동 거리" value={`${formatDistanceKm(dist)} km`} />
               <SummaryStat label="평균 속도" value={`${avgSpeedKph.toFixed(1)} km/h`} />
               <SummaryStat label="최고 속도" value={`${finalData.maxSpeedKph.toFixed(1)} km/h`} />
               <SummaryStat label="페이스" value={formatPace(pace)} />
-              <SummaryStat label="GPS 포인트" value={`${finalData.locationPoints.length}개`} />
+              <SummaryStat label="⚡ 스프린트" value={`${sprintCount}회`} />
             </View>
 
-            {/* 메모 입력 */}
             <Text style={styles.notesLabel}>메모</Text>
             <TextInput
               style={styles.notesInput}
@@ -459,7 +734,6 @@ function SaveModal({
               textAlignVertical="top"
             />
 
-            {/* 버튼 */}
             <TouchableOpacity
               style={[styles.saveBtn, isSaving && styles.saveBtnDisabled]}
               onPress={onSave}
@@ -468,7 +742,6 @@ function SaveModal({
             >
               <Text style={styles.saveBtnText}>{isSaving ? '저장 중...' : '저장하기'}</Text>
             </TouchableOpacity>
-
             <TouchableOpacity style={styles.discardBtn} onPress={onDiscard} activeOpacity={0.7}>
               <Text style={styles.discardBtnText}>삭제하기</Text>
             </TouchableOpacity>
@@ -520,21 +793,9 @@ const styles = StyleSheet.create({
   content: { flex: 1 },
 
   // ── Idle ──
-  idleContainer: {
-    flex: 1,
-    paddingHorizontal: Spacing.lg,
-    paddingTop: Spacing.xl,
-  },
-  selectorLabel: {
-    ...Typography.label,
-    color: Colors.textSecondary,
-    marginBottom: Spacing.sm,
-  },
-  chipRow: {
-    flexDirection: 'row',
-    gap: Spacing.md,
-    marginBottom: Spacing.xl,
-  },
+  idleContainer: { flex: 1, paddingHorizontal: Spacing.lg, paddingTop: Spacing.xl },
+  selectorLabel: { ...Typography.label, color: Colors.textSecondary, marginBottom: Spacing.sm },
+  chipRow: { flexDirection: 'row', gap: Spacing.md, marginBottom: Spacing.xl },
   chip: {
     flex: 1,
     flexDirection: 'row',
@@ -549,7 +810,6 @@ const styles = StyleSheet.create({
   },
   chipEmoji: { fontSize: 16 },
   chipLabel: { ...Typography.bodyMedium, color: Colors.textSecondary },
-
   gpsStatus: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -559,7 +819,6 @@ const styles = StyleSheet.create({
   },
   gpsDot: { width: 8, height: 8, borderRadius: 4 },
   gpsText: { ...Typography.caption, color: Colors.textSecondary },
-
   startButton: {
     backgroundColor: Colors.primary,
     borderRadius: Radius.lg,
@@ -569,72 +828,188 @@ const styles = StyleSheet.create({
   startButtonText: { ...Typography.title, color: Colors.textInverse },
 
   // ── Active ──
-  activeContainer: { flex: 1, paddingHorizontal: Spacing.lg },
+  activeContainer: { flex: 1 },
 
-  gpsWarning: {
-    flexDirection: 'row',
+  // ── Map ──
+  mapContainer: { flex: 1, position: 'relative' },
+  map: { flex: 1 },
+
+  // 방향 포함 위치 마커
+  directionMarker: {
+    width: 36,
+    height: 36,
     alignItems: 'center',
-    gap: Spacing.sm,
-    marginBottom: Spacing.sm,
-    backgroundColor: `${Colors.warning}18`,
-    borderRadius: Radius.md,
+    justifyContent: 'center',
+  },
+  directionArrow: {
+    position: 'absolute',
+    top: 0,
+    width: 0,
+    height: 0,
+    borderLeftWidth: 7,
+    borderRightWidth: 7,
+    borderBottomWidth: 14,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderBottomColor: Colors.primary,  // 동적으로 덮어씌움
+  },
+  directionDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: Colors.primary,   // 동적으로 덮어씌움
+    borderWidth: 2,
+    borderColor: Colors.background,
+  },
+
+  noGpsOverlay: {
+    position: 'absolute',
+    top: Spacing.md,
+    alignSelf: 'center',
+    backgroundColor: `${Colors.background}CC`,
+    borderRadius: Radius.full,
+    paddingHorizontal: Spacing.lg,
     paddingVertical: Spacing.sm,
-    paddingHorizontal: Spacing.md,
-  },
-  gpsWarningText: { ...Typography.caption, color: Colors.warning },
-
-  timerBlock: { alignItems: 'center', marginBottom: Spacing.xl },
-  timerLabel: {
-    ...Typography.label,
-    color: Colors.textSecondary,
-    marginBottom: Spacing.xs,
-  },
-  timerValue: { ...Typography.statLarge, color: Colors.primary },
-  timerValuePaused: { color: Colors.warning },
-
-  statsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: Spacing.md,
-    marginBottom: Spacing.lg,
-  },
-  statCard: {
-    width: '47%',
-    backgroundColor: Colors.surface,
-    borderRadius: Radius.md,
-    padding: Spacing.lg,
     borderWidth: 1,
-    borderColor: Colors.border,
+    borderColor: Colors.warning,
   },
-  statValueRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    gap: 4,
-    marginBottom: 4,
-  },
-  statValue: { ...Typography.statSmall, color: Colors.textPrimary },
-  statUnit: { ...Typography.caption, color: Colors.textSecondary, marginBottom: 3 },
-  statLabel: { ...Typography.caption, color: Colors.textSecondary },
+  noGpsText: { ...Typography.caption, color: Colors.warning },
 
-  mapArea: {
-    flex: 1,
+  recenterBtn: {
+    position: 'absolute',
+    bottom: Spacing.md,
+    right: Spacing.md,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: Colors.surface,
-    borderRadius: Radius.lg,
     borderWidth: 1,
     borderColor: Colors.border,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: Spacing.lg,
-    minHeight: 120,
   },
-  mapEmoji: { fontSize: 32, marginBottom: Spacing.sm },
-  mapText: { ...Typography.bodyMedium, color: Colors.textSecondary, marginBottom: 4 },
-  mapSub: { ...Typography.caption, color: Colors.textDisabled },
+  recenterText: { fontSize: 20 },
 
-  controls: { flexDirection: 'row', gap: Spacing.md, marginBottom: Spacing.lg },
+  // ── Heatmap ──
+  heatmapBtn: {
+    position: 'absolute',
+    bottom: Spacing.md,
+    left: Spacing.md,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  heatmapBtnActive: {
+    backgroundColor: `${Colors.warning}33`,
+    borderColor: Colors.warning,
+  },
+  heatmapBtnText: { fontSize: 20 },
+
+  legendContainer: {
+    position: 'absolute',
+    bottom: Spacing.md + 52,   // 히트맵 버튼 위
+    left: Spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    backgroundColor: `${Colors.surface}CC`,
+    borderRadius: Radius.full,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 5,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  legendLabel: {
+    ...Typography.caption,
+    color: Colors.textSecondary,
+    fontSize: 9,
+    fontWeight: '600',
+  },
+  legendBar: {
+    flexDirection: 'row',
+    borderRadius: 3,
+    overflow: 'hidden',
+  },
+  legendSegment: {
+    width: 16,
+    height: 8,
+  },
+
+
+  // ── Bottom Panel ──
+  bottomPanel: {
+    backgroundColor: Colors.surface,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.md,
+    paddingBottom: Spacing.sm,
+  },
+
+  // ── Sprint ──
+  sprintBanner: {
+    position: 'absolute',
+    top: Spacing.xl,
+    alignSelf: 'center',
+    backgroundColor: '#FF6B0088',
+    borderRadius: Radius.full,
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.sm,
+    borderWidth: 1.5,
+    borderColor: '#FF6B00',
+    zIndex: 10,
+  },
+  sprintBannerText: { ...Typography.titleSmall, color: '#FF6B00', fontWeight: '800' },
+  sprintBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FF6B0022',
+    borderRadius: Radius.full,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 2,
+    borderWidth: 1,
+    borderColor: '#FF6B00',
+    marginRight: Spacing.sm,
+  },
+  sprintBadgeText: { ...Typography.caption, color: '#FF6B00', fontWeight: '700' },
+
+  timerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: Spacing.md,
+  },
+  timerLabel: { ...Typography.caption, color: Colors.textSecondary, marginBottom: 2 },
+  timerValue: { ...Typography.stat, color: Colors.primary },
+  timerValuePaused: { color: Colors.warning },
+  rightIndicators: { flexDirection: 'row', alignItems: 'center' },
+  gpsIndicator: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs },
+  gpsIndicatorText: { ...Typography.caption },
+
+  statsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.surfaceElevated,
+    borderRadius: Radius.md,
+    paddingVertical: Spacing.sm,
+    marginBottom: Spacing.md,
+  },
+  statItem: { flex: 1, alignItems: 'center' },
+  statValueRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 2 },
+  statValue: { ...Typography.bodyMedium, color: Colors.textPrimary, fontWeight: '700' },
+  statUnit: { ...Typography.caption, color: Colors.textSecondary, marginBottom: 1 },
+  statLabel: { ...Typography.caption, color: Colors.textSecondary, marginTop: 1 },
+  statDivider: { width: 1, height: 28, backgroundColor: Colors.border },
+
+  controls: { flexDirection: 'row', gap: Spacing.md },
   stopBtn: {
     flex: 1,
-    paddingVertical: Spacing.lg,
+    paddingVertical: Spacing.md,
     borderRadius: Radius.lg,
     backgroundColor: Colors.surface,
     borderWidth: 1,
@@ -644,7 +1019,7 @@ const styles = StyleSheet.create({
   stopBtnText: { ...Typography.titleSmall, color: Colors.danger },
   pauseBtn: {
     flex: 2,
-    paddingVertical: Spacing.lg,
+    paddingVertical: Spacing.md,
     borderRadius: Radius.lg,
     backgroundColor: Colors.surfaceElevated,
     alignItems: 'center',
@@ -652,7 +1027,7 @@ const styles = StyleSheet.create({
   pauseBtnText: { ...Typography.titleSmall, color: Colors.textPrimary },
   resumeBtn: {
     flex: 2,
-    paddingVertical: Spacing.lg,
+    paddingVertical: Spacing.md,
     borderRadius: Radius.lg,
     backgroundColor: Colors.primary,
     alignItems: 'center',
@@ -660,11 +1035,7 @@ const styles = StyleSheet.create({
   resumeBtnText: { ...Typography.titleSmall, color: Colors.textInverse },
 
   // ── Save Modal ──
-  modalOverlay: {
-    flex: 1,
-    justifyContent: 'flex-end',
-    backgroundColor: Colors.overlay,
-  },
+  modalOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: Colors.overlay },
   modalSheet: {
     backgroundColor: Colors.surface,
     borderTopLeftRadius: 24,
@@ -687,7 +1058,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: Spacing.lg,
   },
-
   sessionBadgeRow: {
     flexDirection: 'row',
     gap: Spacing.sm,
@@ -701,7 +1071,6 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.xs,
   },
   sessionBadgeText: { ...Typography.bodyMedium, color: Colors.textPrimary },
-
   summaryGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -718,12 +1087,7 @@ const styles = StyleSheet.create({
   },
   summaryStatValue: { ...Typography.statSmall, color: Colors.textPrimary, marginBottom: 2 },
   summaryStatLabel: { ...Typography.caption, color: Colors.textSecondary },
-
-  notesLabel: {
-    ...Typography.label,
-    color: Colors.textSecondary,
-    marginBottom: Spacing.sm,
-  },
+  notesLabel: { ...Typography.label, color: Colors.textSecondary, marginBottom: Spacing.sm },
   notesInput: {
     backgroundColor: Colors.surfaceElevated,
     borderRadius: Radius.md,
@@ -735,7 +1099,6 @@ const styles = StyleSheet.create({
     minHeight: 80,
     marginBottom: Spacing.xl,
   },
-
   saveBtn: {
     backgroundColor: Colors.primary,
     borderRadius: Radius.lg,
@@ -745,10 +1108,6 @@ const styles = StyleSheet.create({
   },
   saveBtnDisabled: { opacity: 0.5 },
   saveBtnText: { ...Typography.title, color: Colors.textInverse },
-
-  discardBtn: {
-    paddingVertical: Spacing.md,
-    alignItems: 'center',
-  },
+  discardBtn: { paddingVertical: Spacing.md, alignItems: 'center' },
   discardBtnText: { ...Typography.bodyMedium, color: Colors.danger },
 });

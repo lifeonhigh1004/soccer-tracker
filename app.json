@@ -8,8 +8,15 @@
     "userInterfaceStyle": "dark",
     "splash": {
       "image": "./assets/splash.png",
-      "resizeMode": "contain",
+      "resizeMode": "cover",
       "backgroundColor": "#0A0A0A"
+    },
+    "updates": {
+      "fallbackToCacheTimeout": 0,
+      "url": "https://u.expo.dev/f8b5f87f-88d4-45fb-9ea3-530b710b1f1b"
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
     },
     "ios": {
       "supportsTablet": false,
@@ -18,17 +25,20 @@
         "NSLocationWhenInUseUsageDescription": "경기 및 훈련 중 GPS 위치를 추적합니다.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "화면이 잠겨 있을 때도 세션 추적을 계속합니다.",
         "NSLocationAlwaysUsageDescription": "백그라운드에서 GPS 추적을 유지합니다."
-      },
-      "backgroundModes": [
-        "location"
-      ]
+      }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0A0A0A"
       },
-      "package": "com.soccertracker.app",
+      "package": "com.lifeonhigh1004.soccertracker",
+      "googleServicesFile": "./google-services.json",
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyClz_YHVQat4fiDwUoUGgFC-Bjae-ABeSA"
+        }
+      },
       "permissions": [
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",

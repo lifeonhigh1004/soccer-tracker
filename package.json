@@ -20,6 +20,7 @@
     "expo-image-picker": "~17.0.10",
     "expo-keep-awake": "~15.0.8",
     "expo-location": "~19.0.8",
+    "expo-sensors": "~15.0.8",
     "expo-splash-screen": "~31.0.13",
     "expo-status-bar": "~3.0.9",
     "expo-task-manager": "~14.0.0",
@@ -38,6 +39,7 @@
     "@babel/core": "^7.25.2",
     "@types/react": "~19.1.0",
     "@types/uuid": "^10.0.0",
+    "sharp": "^0.34.5",
     "typescript": "^5.3.3"
   }
 }

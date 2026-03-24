@@ -9,7 +9,8 @@ import {
   StatusBar,
   Alert,
 } from 'react-native';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import type { HistoryListNavProp } from '../../../core/navigation/types';
 
 import { Colors } from '../../../core/theme/colors';
 import { Typography } from '../../../core/theme/typography';
@@ -46,6 +47,7 @@ const TYPE_COLOR: Record<SessionType, string> = {
 };
 
 export function HistoryScreen() {
+  const navigation = useNavigation<HistoryListNavProp>();
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [activeFilter, setActiveFilter] = useState<FilterType>('all');
 
@@ -120,6 +122,7 @@ export function HistoryScreen() {
             <SessionCard
               key={session.id}
               session={session}
+              onPress={() => navigation.navigate('SessionDetail', { session })}
               onDelete={() => handleDelete(session.id)}
             />
           ))
@@ -133,9 +136,11 @@ export function HistoryScreen() {
 
 function SessionCard({
   session,
+  onPress,
   onDelete,
 }: {
   session: SessionSummary;
+  onPress: () => void;
   onDelete: () => void;
 }) {
   const sportColor = SPORT_COLOR[session.sport];
@@ -147,6 +152,7 @@ function SessionCard({
   return (
     <TouchableOpacity
       style={styles.card}
+      onPress={onPress}
       onLongPress={onDelete}
       activeOpacity={0.85}
       delayLongPress={500}
@@ -198,8 +204,6 @@ function SessionCard({
         <Text style={styles.cardNotes} numberOfLines={2}>{session.notes}</Text>
       ) : null}
 
-      {/* 삭제 힌트 */}
-      <Text style={styles.cardHint}>길게 눌러 삭제</Text>
     </TouchableOpacity>
   );
 }

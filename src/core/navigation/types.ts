@@ -1,17 +1,19 @@
 import { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import { CompositeNavigationProp } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import type { SessionSummary } from '../../core/types/session';
+import { Sport, SessionType } from '../../core/types/session';
 
-// 루트 스택 (온보딩 분기용 — 추후 확장)
+// 루트 스택
 export type RootStackParamList = {
+  Onboarding: undefined;
   Main: undefined;
-  // Onboarding: undefined;
 };
 
 // 하단 탭
 export type RootTabParamList = {
   Dashboard: undefined;
-  Tracking: undefined;
+  Tracking: { sport?: Sport; type?: SessionType } | undefined;
   History: undefined;
   Profile: undefined;
 };
@@ -36,3 +38,12 @@ export type ProfileNavProp = CompositeNavigationProp<
   BottomTabNavigationProp<RootTabParamList, 'Profile'>,
   NativeStackNavigationProp<RootStackParamList>
 >;
+
+// HistoryStack
+export type HistoryStackParamList = {
+  HistoryList: undefined;
+  SessionDetail: { session: SessionSummary };
+};
+
+export type SessionDetailNavProp = NativeStackNavigationProp<HistoryStackParamList, 'SessionDetail'>;
+export type HistoryListNavProp = NativeStackNavigationProp<HistoryStackParamList, 'HistoryList'>;

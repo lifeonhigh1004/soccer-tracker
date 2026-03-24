@@ -10,7 +10,7 @@ import { Typography } from '../theme/typography';
 
 import { DashboardScreen } from '../../features/dashboard/screens/DashboardScreen';
 import { TrackingScreen } from '../../features/tracking/screens/TrackingScreen';
-import { HistoryScreen } from '../../features/history/screens/HistoryScreen';
+import { HistoryNavigator } from './HistoryNavigator';
 import { ProfileScreen } from '../../features/profile/screens/ProfileScreen';
 
 const Tab = createBottomTabNavigator<RootTabParamList>();
@@ -74,7 +74,7 @@ export function TabNavigator() {
     >
       <Tab.Screen name="Dashboard" component={DashboardScreen} />
       <Tab.Screen name="Tracking" component={TrackingScreen} />
-      <Tab.Screen name="History" component={HistoryScreen} />
+      <Tab.Screen name="History" component={HistoryNavigator} />
       <Tab.Screen name="Profile" component={ProfileScreen} />
     </Tab.Navigator>
   );

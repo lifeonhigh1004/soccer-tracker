@@ -17,6 +17,7 @@ import { Sport, SessionType } from '../../../core/types/session';
 import type { SessionSummary } from '../../../core/types/session';
 import type { DashboardNavProp } from '../../../core/navigation/types';
 import { loadSessions } from '../../../shared/services/storageService';
+import { loadProfile, PlayerProfile } from '../../../shared/services/profileService';
 import {
   formatDuration,
   formatDistanceKm,
@@ -43,10 +44,12 @@ function getWeeklyStats(sessions: SessionSummary[]): WeeklyStats {
 export function DashboardScreen() {
   const navigation = useNavigation<DashboardNavProp>();
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [profile, setProfile] = useState<PlayerProfile | null>(null);
 
   useFocusEffect(
     useCallback(() => {
       loadSessions().then(setSessions);
+      loadProfile().then(setProfile);
     }, []),
   );
 
@@ -65,10 +68,14 @@ export function DashboardScreen() {
         <View style={styles.header}>
           <View>
             <Text style={styles.greeting}>안녕하세요 👋</Text>
-            <Text style={styles.headerTitle}>오늘도 뛰어볼까요?</Text>
+            <Text style={styles.headerTitle}>
+              {profile?.name ? `${profile.name}, 오늘도 뛰어볼까요?` : '오늘도 뛰어볼까요?'}
+            </Text>
           </View>
           <View style={styles.avatar}>
-            <Text style={styles.avatarText}>⚽</Text>
+            <Text style={styles.avatarText}>
+              {profile?.name ? profile.name.charAt(0).toUpperCase() : '⚽'}
+            </Text>
           </View>
         </View>
 
@@ -92,6 +99,55 @@ export function DashboardScreen() {
           </View>
         </View>
 
+        {/* 주간 목표 */}
+        {profile && (profile.weeklyGoalSessions > 0 || profile.weeklyGoalDistanceKm > 0) && (
+          <View style={styles.goalCard}>
+            <Text style={styles.cardLabel}>주간 목표</Text>
+            {profile.weeklyGoalSessions > 0 && (
+              <View style={styles.goalRow}>
+                <View style={styles.goalLabelRow}>
+                  <Text style={styles.goalLabel}>세션</Text>
+                  <Text style={styles.goalValue}>
+                    {Math.min(weekly.sessionCount, profile.weeklyGoalSessions)}/{profile.weeklyGoalSessions}회
+                  </Text>
+                </View>
+                <View style={styles.goalBarBg}>
+                  <View
+                    style={[
+                      styles.goalBarFill,
+                      {
+                        width: `${Math.min(100, (weekly.sessionCount / profile.weeklyGoalSessions) * 100)}%` as any,
+                        backgroundColor: weekly.sessionCount >= profile.weeklyGoalSessions ? Colors.success : Colors.primary,
+                      },
+                    ]}
+                  />
+                </View>
+              </View>
+            )}
+            {profile.weeklyGoalDistanceKm > 0 && (
+              <View style={[styles.goalRow, { marginTop: profile.weeklyGoalSessions > 0 ? Spacing.md : 0 }]}>
+                <View style={styles.goalLabelRow}>
+                  <Text style={styles.goalLabel}>거리</Text>
+                  <Text style={styles.goalValue}>
+                    {formatDistanceKm(weekly.totalDistanceM)}/{profile.weeklyGoalDistanceKm}km
+                  </Text>
+                </View>
+                <View style={styles.goalBarBg}>
+                  <View
+                    style={[
+                      styles.goalBarFill,
+                      {
+                        width: `${Math.min(100, ((weekly.totalDistanceM / 1000) / profile.weeklyGoalDistanceKm) * 100)}%` as any,
+                        backgroundColor: (weekly.totalDistanceM / 1000) >= profile.weeklyGoalDistanceKm ? Colors.success : Colors.training,
+                      },
+                    ]}
+                  />
+                </View>
+              </View>
+            )}
+          </View>
+        )}
+
         {/* 빠른 시작 */}
         <Text style={styles.sectionTitle}>빠른 시작</Text>
         <View style={styles.quickStartRow}>
@@ -100,14 +156,14 @@ export function DashboardScreen() {
             title="축구 경기"
             subtitle="경기 기록 시작"
             color={Colors.match}
-            onPress={() => navigation.navigate('Tracking')}
+            onPress={() => navigation.navigate('Tracking', { sport: Sport.Soccer, type: SessionType.Match })}
           />
           <QuickStartCard
             emoji="🏃"
             title="훈련"
             subtitle="훈련 기록 시작"
             color={Colors.training}
-            onPress={() => navigation.navigate('Tracking')}
+            onPress={() => navigation.navigate('Tracking', { sport: Sport.Soccer, type: SessionType.Training })}
           />
         </View>
         <View style={[styles.quickStartRow, { marginBottom: Spacing.xxl }]}>
@@ -116,7 +172,7 @@ export function DashboardScreen() {
             title="풋살 경기"
             subtitle="풋살 기록 시작"
             color={Colors.futsal}
-            onPress={() => navigation.navigate('Tracking')}
+            onPress={() => navigation.navigate('Tracking', { sport: Sport.Futsal, type: SessionType.Match })}
           />
           <View style={styles.quickStartEmpty} />
         </View>
@@ -312,6 +368,33 @@ const styles = StyleSheet.create({
   recentStats: { alignItems: 'flex-end' },
   recentDist: { ...Typography.bodyMedium, color: Colors.textPrimary },
   recentSpeed: { ...Typography.caption, color: Colors.textSecondary, marginTop: 2 },
+
+  goalCard: {
+    backgroundColor: Colors.surface,
+    borderRadius: 16,
+    padding: Spacing.xl,
+    marginBottom: Spacing.xxl,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  goalRow: {},
+  goalLabelRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: Spacing.xs,
+  },
+  goalLabel: { ...Typography.bodyMedium, color: Colors.textSecondary },
+  goalValue: { ...Typography.bodyMedium, color: Colors.textPrimary },
+  goalBarBg: {
+    height: 6,
+    backgroundColor: Colors.surfaceElevated,
+    borderRadius: Radius.full,
+    overflow: 'hidden',
+  },
+  goalBarFill: {
+    height: 6,
+    borderRadius: Radius.full,
+  },
 
   seeAllBtn: {
     alignItems: 'center',
