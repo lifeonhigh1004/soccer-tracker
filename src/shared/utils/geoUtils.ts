@@ -1,4 +1,4 @@
-import { LocationPoint } from '../core/types/session';
+import { LocationPoint } from '../../core/types/session';
 
 /** Haversine 공식으로 두 좌표 간 거리 계산 (미터) */
 export function haversineDistance(

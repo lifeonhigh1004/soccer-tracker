@@ -19,7 +19,9 @@
         "NSLocationAlwaysAndWhenInUseUsageDescription": "화면이 잠겨 있을 때도 세션 추적을 계속합니다.",
         "NSLocationAlwaysUsageDescription": "백그라운드에서 GPS 추적을 유지합니다."
       },
-      "backgroundModes": ["location"]
+      "backgroundModes": [
+        "location"
+      ]
     },
     "android": {
       "adaptiveIcon": {
@@ -31,7 +33,12 @@
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
         "ACCESS_BACKGROUND_LOCATION",
-        "FOREGROUND_SERVICE"
+        "FOREGROUND_SERVICE",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_BACKGROUND_LOCATION",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_LOCATION"
       ]
     },
     "plugins": [
@@ -46,8 +53,9 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "soccer-tracker"
+        "projectId": "f8b5f87f-88d4-45fb-9ea3-530b710b1f1b"
       }
-    }
+    },
+    "owner": "lifeonhigh1004"
   }
 }
